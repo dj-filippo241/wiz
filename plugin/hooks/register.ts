@@ -39,7 +39,7 @@ export const register: Register = on => {
   })
 
   on('session.end', async ($, e, next) => {
-    await $.process.run(['/bin/sh', '-c', WIZ, 'wiz', '_tocca', $.session.id()], { timeoutMs: 10000 }).catch(() => {})
+    await $.process.run(['/bin/sh', '-c', WIZ, 'wiz', '_fine', $.session.id()], { timeoutMs: 10000 }).catch(() => {})
     return next(e)
   })
 }

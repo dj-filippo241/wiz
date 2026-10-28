@@ -42,6 +42,9 @@ Il mod avvisa `wiz` quando Claude lavora e quando si ferma (solo la sessione pri
 subagenti). Claude lavora all'inizio del turno e a ogni passo. Si ferma a fine turno, quando lo
 interrompi, quando ti chiede un permesso o una risposta, e quando la sessione si chiude.
 
+Il Mac resta sveglio anche quando Claude ha finito il turno ma ha una shell in background (una
+simulazione, un server): finisce la shell, torna il sonno normale.
+
 Finché almeno una sessione lavora, il sonno è disattivato. Quando tutte si fermano, il sonno torna
 normale e, se il coperchio è chiuso, il Mac dorme subito. Una guardia controlla ogni 30 secondi
 che le sessioni al lavoro esistano ancora: un Claude chiuso male non tiene sveglio il Mac.

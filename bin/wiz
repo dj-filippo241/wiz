@@ -14,8 +14,9 @@ PIDFILE="$DIR/caffeinate.pid"
 DAFILE="$DIR/da"
 MODOFILE="$DIR/modo"
 SESSIONI="$DIR/sessioni"
+CLAUDE_PID="$DIR/claude"
 SUDOERS=/etc/sudoers.d/wiz
-mkdir -p "$DIR" "$SESSIONI"
+mkdir -p "$DIR" "$SESSIONI" "$CLAUDE_PID"
 
 R=$'\e[0m'; B=$'\e[1m'; DIM=$'\e[2m'
 BLU=$'\e[1;37;44m'; VER=$'\e[1;30;42m'; GIA=$'\e[1;30;43m'; ROS=$'\e[1;37;41m'; MAG=$'\e[1;37;45m'
@@ -63,8 +64,26 @@ sessioni_al_lavoro() {
   echo "$n"
 }
 
+# Conta le shell che Claude tiene aperte fra un turno e l'altro (i comandi in background).
+# Claude lancia ogni comando con una shell che carica il suo shell-snapshot.
+shell_in_background() {
+  local f p n=0
+  for f in "$CLAUDE_PID"/*; do
+    [ -f "$f" ] || continue
+    p=$(cat "$f")
+    if ! ps -p "$p" >/dev/null 2>&1; then rm -f "$f"; continue; fi
+    [ -f "$SESSIONI/$(basename "$f")" ] && continue
+    n=$(( n + $(pgrep -P "$p" -f 'shell-snapshots/snapshot' | wc -l) ))
+  done
+  echo "$n"
+}
+
+sveglio_serve() {
+  [ "$(sessioni_al_lavoro)" -gt 0 ] || [ "$(shell_in_background)" -gt 0 ]
+}
+
 applica_speedball() {
-  if [ "$(sessioni_al_lavoro)" -gt 0 ]; then
+  if sveglio_serve; then
     bender_attivo || permesso_pmset 1
     avvia_guardia
   else
@@ -84,7 +103,7 @@ avvia_guardia() {
 }
 
 esci_da_speedball() {
-  rm -f "$MODOFILE" "$SESSIONI"/*
+  rm -f "$MODOFILE" "$SESSIONI"/* "$CLAUDE_PID"/*
 }
 
 stato() {
@@ -120,9 +139,10 @@ mostra() {
   case "$s" in
     speedball)
       colore=$MAG; titolo="SPEEDBALL"
-      local n; n=$(sessioni_al_lavoro)
+      local n b; n=$(sessioni_al_lavoro); b=$(shell_in_background)
       if [ "$n" = 1 ]; then riga="Claude lavora: non dorme, neanche col coperchio chiuso."
       elif [ "$n" -gt 1 ]; then riga="Claude lavora in $n sessioni: non dorme, neanche col coperchio chiuso."
+      elif [ "$b" -gt 0 ]; then riga="Claude ha $b shell in background: non dorme, neanche col coperchio chiuso."
       else riga="Tocca a te: sonno normale. Quando Claude riparte, resta sveglio."; fi ;;
     bender) colore=$ROS; titolo="BENDER"; riga="Non dorme mai, neanche col coperchio chiuso." ;;
     high)   colore=$GIA; titolo="HIGH";   riga="Non dorme finché il coperchio è aperto." ;;
@@ -168,21 +188,25 @@ case "${1:-}" in
     if ! speedball_attivo; then echo speedball > "$MODOFILE"; date +%s > "$DAFILE"; fi
     applica_speedball
     mostra ;;
-  _lavora|_tocca)
-    # Chiamati dal mod di Claude Code a inizio e fine turno: $2 è la sessione, $PPID è Claude.
+  _lavora|_tocca|_fine)
+    # Chiamati dal mod di Claude Code: $2 è la sessione, $PPID è il processo di Claude.
     speedball_attivo || exit 0
     [ -n "$2" ] || exit 0
-    if [ "$1" = _lavora ]; then
-      # A ogni passo basta il file: pmset si tocca solo quando lo stato cambia.
-      [ -f "$SESSIONI/$2" ] && bender_attivo && exit 0
-      echo "$PPID" > "$SESSIONI/$2"
-    else
-      [ -f "$SESSIONI/$2" ] || exit 0
-      rm -f "$SESSIONI/$2"
-    fi
+    case "$1" in
+      _lavora)
+        # A ogni passo basta il file: pmset si tocca solo quando lo stato cambia.
+        [ -f "$SESSIONI/$2" ] && bender_attivo && exit 0
+        echo "$PPID" > "$SESSIONI/$2"
+        echo "$PPID" > "$CLAUDE_PID/$2" ;;
+      _tocca)
+        [ -f "$SESSIONI/$2" ] || exit 0
+        rm -f "$SESSIONI/$2" ;;
+      _fine)
+        rm -f "$SESSIONI/$2" "$CLAUDE_PID/$2" ;;
+    esac
     applica_speedball ;;
   _guardia)
-    while speedball_attivo && [ "$(sessioni_al_lavoro)" -gt 0 ]; do sleep 30; done
+    while speedball_attivo && sveglio_serve; do sleep 30; done
     rm -f "$GUARDIA"
     speedball_attivo && applica_speedball ;;
   high)
