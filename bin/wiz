@@ -66,10 +66,21 @@ sessioni_al_lavoro() {
 applica_speedball() {
   if [ "$(sessioni_al_lavoro)" -gt 0 ]; then
     bender_attivo || permesso_pmset 1
+    avvia_guardia
   else
     bender_attivo && permesso_pmset 0
     coperchio_chiuso && pmset sleepnow >/dev/null
   fi
+}
+
+# La guardia controlla ogni 30 secondi che le sessioni al lavoro esistano ancora:
+# una sessione chiusa male (Claude chiuso o andato in crash) non deve tenere sveglio il Mac.
+GUARDIA="$DIR/guardia.pid"
+avvia_guardia() {
+  local p; p=$(cat "$GUARDIA" 2>/dev/null)
+  [ -n "$p" ] && ps -p "$p" -o command= 2>/dev/null | grep -q "_guardia" && return
+  nohup "$0" _guardia </dev/null >/dev/null 2>&1 &
+  echo $! > "$GUARDIA"
 }
 
 esci_da_speedball() {
@@ -161,8 +172,19 @@ case "${1:-}" in
     # Chiamati dal mod di Claude Code a inizio e fine turno: $2 è la sessione, $PPID è Claude.
     speedball_attivo || exit 0
     [ -n "$2" ] || exit 0
-    if [ "$1" = _lavora ]; then echo "$PPID" > "$SESSIONI/$2"; else rm -f "$SESSIONI/$2"; fi
+    if [ "$1" = _lavora ]; then
+      # A ogni passo basta il file: pmset si tocca solo quando lo stato cambia.
+      [ -f "$SESSIONI/$2" ] && bender_attivo && exit 0
+      echo "$PPID" > "$SESSIONI/$2"
+    else
+      [ -f "$SESSIONI/$2" ] || exit 0
+      rm -f "$SESSIONI/$2"
+    fi
     applica_speedball ;;
+  _guardia)
+    while speedball_attivo && [ "$(sessioni_al_lavoro)" -gt 0 ]; do sleep 30; done
+    rm -f "$GUARDIA"
+    speedball_attivo && applica_speedball ;;
   high)
     esci_da_speedball; togli_bender
     if ! pid_wiz >/dev/null; then

@@ -38,8 +38,10 @@ Per toglierlo: `sudo rm /etc/sudoers.d/wiz`.
 
 ## Come funziona speedball
 
-Il mod avvisa `wiz` all'inizio e alla fine di ogni turno di Claude (solo la sessione principale,
-non i subagenti). Finché almeno una sessione lavora, il sonno è disattivato. Quando tutte hanno
-finito, il sonno torna normale e, se il coperchio è chiuso, il Mac dorme subito.
+Il mod avvisa `wiz` quando Claude lavora e quando si ferma (solo la sessione principale, non i
+subagenti). Claude lavora all'inizio del turno e a ogni passo. Si ferma a fine turno, quando lo
+interrompi, quando ti chiede un permesso o una risposta, e quando la sessione si chiude.
 
-Limite: se Claude chiede un permesso a metà turno, il Mac resta sveglio fino alla risposta.
+Finché almeno una sessione lavora, il sonno è disattivato. Quando tutte si fermano, il sonno torna
+normale e, se il coperchio è chiuso, il Mac dorme subito. Una guardia controlla ogni 30 secondi
+che le sessioni al lavoro esistano ancora: un Claude chiuso male non tiene sveglio il Mac.
