@@ -1,0 +1,193 @@
+#!/bin/bash
+# wiz — decide quando il Mac dorme.
+# Il nome viene da Mona Lisa Overdrive: la wiz è lo stimolante in cristalli di Mona.
+#
+#   wiz          mostra lo stato
+#   wiz sleep    manda il Mac a dormire adesso
+#   wiz sober    impostazioni normali: dorme da solo quando non lo usi
+#   wiz high     resta sveglio finché il coperchio è aperto
+#   wiz bender   resta sveglio anche col coperchio chiuso (chiede la password)
+#   wiz speedball  come bender mentre Claude Code lavora; quando tocca a te, sonno normale
+
+DIR="$HOME/.local/state/wiz"
+PIDFILE="$DIR/caffeinate.pid"
+DAFILE="$DIR/da"
+MODOFILE="$DIR/modo"
+SESSIONI="$DIR/sessioni"
+SUDOERS=/etc/sudoers.d/wiz
+mkdir -p "$DIR" "$SESSIONI"
+
+R=$'\e[0m'; B=$'\e[1m'; DIM=$'\e[2m'
+BLU=$'\e[1;37;44m'; VER=$'\e[1;30;42m'; GIA=$'\e[1;30;43m'; ROS=$'\e[1;37;41m'; MAG=$'\e[1;37;45m'
+
+pid_wiz() {
+  local p; p=$(cat "$PIDFILE" 2>/dev/null) || return 1
+  ps -p "$p" -o comm= 2>/dev/null | grep -q caffeinate && echo "$p"
+}
+
+bender_attivo() {
+  [ "$(pmset -g | awk '/SleepDisabled/{print $2}')" = "1" ]
+}
+
+speedball_attivo() {
+  [ "$(cat "$MODOFILE" 2>/dev/null)" = speedball ]
+}
+
+# Il permesso di cambiare solo disablesleep senza password: serve agli hook, che non la possono chiedere.
+permesso_pmset() {
+  sudo -n /usr/bin/pmset -a disablesleep "$1" 2>/dev/null
+}
+
+installa_permesso() {
+  [ -f "$SUDOERS" ] && return 0
+  local tmp; tmp=$(mktemp)
+  printf '%s ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 0, /usr/bin/pmset -a disablesleep 1\n' "$(id -un)" > "$tmp"
+  /usr/sbin/visudo -cf "$tmp" >/dev/null || { rm -f "$tmp"; echo "Non riesco a preparare il permesso."; return 1; }
+  echo "${DIM}Una volta sola: macOS ti chiede la password per dare a wiz il permesso di cambiare il sonno.${R}"
+  osascript -e "do shell script \"install -m 0440 -o root -g wheel '$tmp' '$SUDOERS'\" with prompt \"wiz vuole cambiare da solo il sonno del Mac (solo quello).\" with administrator privileges" >/dev/null 2>&1
+  rm -f "$tmp"
+  [ -f "$SUDOERS" ] || { echo "Permesso non dato: speedball non parte."; return 1; }
+}
+
+coperchio_chiuso() {
+  ioreg -r -k AppleClamshellState -d 4 | grep -q '"AppleClamshellState" = Yes'
+}
+
+# Conta le sessioni di Claude che stanno lavorando; toglie quelle il cui processo non c'è più.
+sessioni_al_lavoro() {
+  local f n=0
+  for f in "$SESSIONI"/*; do
+    [ -f "$f" ] || continue
+    if ps -p "$(cat "$f")" >/dev/null 2>&1; then n=$((n + 1)); else rm -f "$f"; fi
+  done
+  echo "$n"
+}
+
+applica_speedball() {
+  if [ "$(sessioni_al_lavoro)" -gt 0 ]; then
+    bender_attivo || permesso_pmset 1
+  else
+    bender_attivo && permesso_pmset 0
+    coperchio_chiuso && pmset sleepnow >/dev/null
+  fi
+}
+
+esci_da_speedball() {
+  rm -f "$MODOFILE" "$SESSIONI"/*
+}
+
+stato() {
+  if speedball_attivo; then echo speedball
+  elif bender_attivo; then echo bender
+  elif pid_wiz >/dev/null; then echo high
+  else echo sober
+  fi
+}
+
+durata() {
+  local da; da=$(cat "$DAFILE" 2>/dev/null) || return
+  local s=$(( $(date +%s) - da )) h m
+  h=$(( s / 3600 )); m=$(( s % 3600 / 60 ))
+  if [ "$h" -gt 0 ]; then echo "da ${h} h ${m} min"; else echo "da ${m} min"; fi
+}
+
+ferma_high() {
+  local p; p=$(pid_wiz) && kill "$p" 2>/dev/null
+  rm -f "$PIDFILE"
+}
+
+togli_bender() {
+  if bender_attivo && ! permesso_pmset 0; then
+    echo "${DIM}Serve la password del Mac per riattivare il sonno.${R}"
+    sudo pmset -a disablesleep 0 || { echo "Non riesco: il Mac resta sveglio anche chiuso."; exit 1; }
+  fi
+}
+
+mostra() {
+  local s colore titolo riga
+  s=$(stato)
+  case "$s" in
+    speedball)
+      colore=$MAG; titolo="SPEEDBALL"
+      local n; n=$(sessioni_al_lavoro)
+      if [ "$n" = 1 ]; then riga="Claude lavora: non dorme, neanche col coperchio chiuso."
+      elif [ "$n" -gt 1 ]; then riga="Claude lavora in $n sessioni: non dorme, neanche col coperchio chiuso."
+      else riga="Tocca a te: sonno normale. Quando Claude riparte, resta sveglio."; fi ;;
+    bender) colore=$ROS; titolo="BENDER"; riga="Non dorme mai, neanche col coperchio chiuso." ;;
+    high)   colore=$GIA; titolo="HIGH";   riga="Non dorme finché il coperchio è aperto." ;;
+    sober)  colore=$VER; titolo="SOBER";  riga="Impostazioni normali: dorme da solo quando non lo usi." ;;
+  esac
+  echo
+  printf '  %s                              %s\n' "$colore" "$R"
+  printf '  %s   %-27s%s\n' "$colore" "$titolo" "$R"
+  printf '  %s                              %s\n' "$colore" "$R"
+  echo
+  echo "  ${B}${riga}${R}"
+  [ "$s" != sober ] && d=$(durata) && [ -n "$d" ] && echo "  ${DIM}Attivo ${d}.${R}"
+  local batt; batt=$(pmset -g batt | grep -Eo '[0-9]+%' | head -1)
+  local fonte; fonte=$(pmset -g batt | grep -q "AC Power" && echo "alimentatore" || echo "batteria")
+  echo "  ${DIM}Batteria ${batt}, su ${fonte}.${R}"
+  if [ "$s" = bender ]; then
+    echo "  ${B}Attenzione:${R} chiuso nello zaino il Mac scalda. Tornare normali: ${B}wiz sober${R}"
+    [ "$fonte" = batteria ] && echo "  ${B}Attenzione:${R} sei a batteria, e il Mac non dorme neanche quando si scarica."
+  fi
+  if [ "$s" = sober ]; then
+    local altri
+    # Un caffeinate lanciato da un'altra app prende il nome di quell'app (per esempio claude).
+    altri=$(pmset -g assertions | grep -E 'PreventUserIdleSystemSleep|PreventSystemSleep' \
+      | grep -E '^ *pid' | grep -v powerd | sed -E 's/^ *pid ([0-9]+)\(([^)]+)\).*/\1 \2/' \
+      | while read -r p nome; do
+          if [ "$nome" = caffeinate ]; then
+            ps -p "$(ps -o ppid= -p "$p")" -o comm= 2>/dev/null | xargs basename
+          else echo "$nome"; fi
+        done | sort -u | paste -sd ',' - | sed 's/,/, /g')
+    [ -n "$altri" ] && echo "  ${DIM}Per ora lo tiene sveglio anche: ${altri}.${R}"
+  fi
+  echo
+}
+
+case "${1:-}" in
+  "")
+    mostra ;;
+  sober)
+    esci_da_speedball; ferma_high; togli_bender; rm -f "$DAFILE"; mostra ;;
+  speedball)
+    installa_permesso || exit 1
+    ferma_high
+    if ! speedball_attivo; then echo speedball > "$MODOFILE"; date +%s > "$DAFILE"; fi
+    applica_speedball
+    mostra ;;
+  _lavora|_tocca)
+    # Chiamati dal mod di Claude Code a inizio e fine turno: $2 è la sessione, $PPID è Claude.
+    speedball_attivo || exit 0
+    [ -n "$2" ] || exit 0
+    if [ "$1" = _lavora ]; then echo "$PPID" > "$SESSIONI/$2"; else rm -f "$SESSIONI/$2"; fi
+    applica_speedball ;;
+  high)
+    esci_da_speedball; togli_bender
+    if ! pid_wiz >/dev/null; then
+      nohup caffeinate -di >/dev/null 2>&1 &
+      echo $! > "$PIDFILE"; disown
+      date +%s > "$DAFILE"
+    fi
+    mostra ;;
+  bender)
+    ferma_high
+    speedball_attivo && { esci_da_speedball; rm -f "$DAFILE"; }
+    if ! bender_attivo; then
+      if ! permesso_pmset 1; then
+        echo "${DIM}Serve la password del Mac per togliere il sonno.${R}"
+        sudo pmset -a disablesleep 1 || { echo "Non riesco: stato invariato."; exit 1; }
+      fi
+    fi
+    [ -f "$DAFILE" ] || date +%s > "$DAFILE"
+    mostra ;;
+  sleep)
+    esci_da_speedball; ferma_high; togli_bender; rm -f "$DAFILE"
+    echo "  ${BLU}  SLEEP  ${R}  Buonanotte. Al risveglio sei in SOBER."
+    sleep 1; pmset sleepnow >/dev/null ;;
+  -h|--help|aiuto|help)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)
+    echo "Stato sconosciuto: $1. Scegli tra sleep, sober, high, bender, speedball."; exit 1 ;;
+esac
